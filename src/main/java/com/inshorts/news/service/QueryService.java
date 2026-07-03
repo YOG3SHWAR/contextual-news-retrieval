@@ -124,7 +124,12 @@ public class QueryService {
     // --- routing ---------------------------------------------------------------
 
     private List<ArticleHit> route(QueryUnderstanding u, String query, Double lat, Double lon, int limit) {
-        Set<Intent> intents = EnumSet.copyOf(u.intents());
+        // Defensive: QueryUnderstanding's canonical constructor already defaults
+        // empty intents to [SEARCH], but guard here too so any future construction
+        // path can't trip EnumSet.copyOf on an empty collection (empty -> search fallback).
+        Set<Intent> intents = u.intents().isEmpty()
+                ? EnumSet.noneOf(Intent.class)
+                : EnumSet.copyOf(u.intents());
 
         Optional<String> category = intents.contains(Intent.CATEGORY) ? resolveCategory(u) : Optional.empty();
         Optional<String> source = intents.contains(Intent.SOURCE) ? resolveSource(u) : Optional.empty();

@@ -80,6 +80,17 @@ class NewsEndpointContractTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void queryWithEntitiesOnlyNoIntentReturns200() throws Exception {
+        // Entities but no valid intent must not error (empty intents -> search fallback).
+        mockMvc.perform(get("/api/v1/news/query")
+                        .param("query", "news18 update")
+                        .param("entities", "News18"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.articles").isArray())
+                .andExpect(jsonPath("$.total").exists());
+    }
+
+    @Test
     void limitIsClampedToFifty() throws Exception {
         mockMvc.perform(get("/api/v1/news/score").param("threshold", "0.0").param("limit", "999"))
                 .andExpect(status().isOk())
