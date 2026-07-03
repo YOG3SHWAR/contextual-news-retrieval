@@ -17,7 +17,7 @@ Build a REST API that:
 4. Enriches every returned article with an LLM-generated `llm_summary`.
 5. Returns a consistent JSON envelope with rich metadata.
 
-**Chosen stack (from the architecture decision):** Java 21, Spring Boot 3.3,
+**Chosen stack (from the architecture decision):** Java 21, Spring Boot 3.5,
 PostgreSQL 16 + PostGIS, Redis, Anthropic Claude, Testcontainers for local infra.
 
 ---
@@ -38,19 +38,31 @@ Source file: `data/news_data.json` — an array of 2000 article objects.
 | `source_name` | string | 152 distinct sources. |
 | `category` | array of strings | 32 distinct labels; inconsistent casing (`national`, `General`, `IPL_2025`, `Health___Fitness`). |
 | `relevance_score` | float `0.0–1.0` | |
-| `latitude` | float | May be null or `0` for some rows. |
-| `longitude` | float | May be null or `0` for some rows. |
+| `latitude` | float | Always present and valid in the seed file (verified); the loader still defends against null/`(0,0)`. |
+| `longitude` | float | Always present and valid in the seed file (verified); see above. |
 
 ### 2.2 Data facts that constrain behavior (verified against the file)
 
-- **2000 rows**, **32 categories**, **152 sources**.
+- **2000 rows**, **32 categories**, **152 sources**; all `id`s unique.
 - Only `title` + `description` carry text — **no article body**. Summaries must be
   generated from these two fields only.
 - `category` is an **array** in the data but a **string** in the task's example
   output. **Decision: return the array** (the honest superset) and document it.
-- Some rows have null or `(0,0)` coordinates → these are **excluded** from
-  `nearby` / `trending` (`(0,0)` is in the ocean and distorts distance ranking).
-- Category / source labels are noisy → match **case-insensitively**.
+- **All 2000 rows have valid coordinates** — lat ∈ `[15.60, 22.50]`, lon ∈
+  `[72.60, 80.88]` (western/central India). Demo queries and the event simulator
+  must use Indian coordinates, or `nearby`/`trending` return nothing.
+- The loader still **defends** against null/`(0,0)` coordinates (stores null
+  `geog`; excluded from `nearby`/`trending` since `(0,0)` is in the ocean) —
+  future feeds may contain them. The defense is verified with test fixtures,
+  not the seed file.
+- `publication_date` spans only **4 days** (`2025-03-22` → `2025-03-26`), so
+  date-ranked results have many near-ties — the deterministic `id` tie-break is
+  load-bearing, not cosmetic.
+- Labels are noisy → match **case-insensitively**. Verified: mixed-case category
+  labels (`General`, `DEFENCE`, `IPL_2025`) and true source-name case variants
+  (`Mid-day`/`Mid-Day`, `Latestly`/`LatestLY`, `X (Formerly Twitter)`/`X (formerly
+  Twitter)`). Category filtering uses a **lowercased copy of the array**
+  (`categories_norm`), because Postgres `@>` containment is exact-match.
 
 ---
 
@@ -84,6 +96,10 @@ All ranking ties are broken deterministically by `id` for stable ordering.
 - **Direct-input escape hatch:** callers may pass `intent` and/or `entities`
   directly as query params to bypass the LLM (deterministic, works with no API
   key). This is both a feature and a reliability lever.
+- **Location resolution:** `nearby` routing prefers the request's `lat`/`lon`.
+  A location entity (e.g. "Mumbai") is resolved via a **bundled static
+  city-coordinate gazetteer** — no external geocoding API. If neither resolves,
+  the location term falls back to text `search`.
 
 ### 3.3 LLM enrichment
 
@@ -99,8 +115,8 @@ All ranking ties are broken deterministically by `id` for stable ordering.
 - R9: Simulate a user-event stream: `{event_id, user_id, article_id,
   event_type(view|click|share|dwell), lat, lon, geohash, ts}`.
 - R10: Compute `trending = Σ(type_weight · e^(-λ·Δt)) · geo_factor` with type
-  weights `view=1, click=3, share=5`, recency decay (~6h half-life), and a geo
-  factor favoring events near the requester.
+  weights `view=1, dwell=2, click=3, share=5`, recency decay (~6h half-life),
+  and a geo factor favoring events near the requester.
 - R11: Cache top-N per **geohash prefix** (precision ~5 ≈ 5 km) in Redis under
   `trending:{prefix}` with a short TTL (~60 s).
 
@@ -161,7 +177,7 @@ Uniform body for all errors, with correct HTTP status:
 | Param | Rule |
 |---|---|
 | `limit` | integer, clamp to `[1, 50]`, default 5. |
-| `threshold` | float in `[0,1]`, default 0.7; reject/clamp otherwise. |
+| `threshold` | float in `[0,1]`, default 0.7; out-of-range → 400 (consistent with `lat`/`lon` handling). |
 | `lat` | float in `[-90, 90]`; else 400. |
 | `lon` | float in `[-180, 180]`; else 400. |
 | `radius` | > 0, cap at 500 km; default 10. |
@@ -203,7 +219,8 @@ Uniform body for all errors, with correct HTTP status:
    correctly limited results.
 2. Every returned article has an `llm_summary` (or `null` + `degraded:true`).
 3. `/nearby` returns only articles within `radius`, ordered by real spheroidal
-   distance, with `distance_km` populated; `(0,0)`/null-geo rows excluded.
+   distance, with `distance_km` populated; the null/`(0,0)`-geo defense is
+   verified via test fixtures (the seed file contains no such rows).
 4. `/query` routes single- and multi-intent queries correctly and honors the
    direct `intent`/`entities` escape hatch with no API key set.
 5. `/trending` returns location-aware trending results served from the geohash cache.

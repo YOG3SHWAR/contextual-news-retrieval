@@ -63,7 +63,7 @@ Each candidate is assessed on the axes that actually matter for this system:
 
 ### Approach A — Spring Boot + PostgreSQL/PostGIS + Redis  ⭐ (chosen)
 
-**Stack:** Java 21, Spring Boot 3.3 (Web, Data JPA, Validation, Actuator),
+**Stack:** Java 21, Spring Boot 3.5 (Web, Data JPA, Validation, Actuator),
 PostgreSQL 16 + **PostGIS** (geography column + GiST index) for
 `nearby`/`trending`, **Postgres full-text search (`tsvector`/`ts_rank`)** for
 `search`, **Redis** for the trending and LLM-response caches, **Anthropic
@@ -92,7 +92,7 @@ with the technology preferences stated in the brief.
 
 ### Approach B — Spring Boot + MongoDB (2dsphere) + Redis
 
-**Stack:** Java 21, Spring Boot 3.3, **MongoDB** with a `2dsphere` geo index and
+**Stack:** Java 21, Spring Boot 3.5, **MongoDB** with a `2dsphere` geo index and
 a text index, Redis, Claude.
 
 **Rationale:** The article shape is document-like. Mongo stores the `category`
@@ -114,7 +114,7 @@ model also suits the trending event stream.
 
 ### Approach C — Spring Boot + Elasticsearch (unified retrieval engine)
 
-**Stack:** Java 21, Spring Boot 3.3, **Elasticsearch/OpenSearch** as the single
+**Stack:** Java 21, Spring Boot 3.5, **Elasticsearch/OpenSearch** as the single
 retrieval backend, Redis optional, Claude.
 
 **Rationale:** Every endpoint is fundamentally "filter + rank," which maps
@@ -161,7 +161,7 @@ from lexical to vector similarity.
 
 ### Approach E — Lightweight in-memory / embedded (H2 or plain collections)
 
-**Stack:** Java 21, Spring Boot 3.3, JSON loaded into in-memory indexes (or
+**Stack:** Java 21, Spring Boot 3.5, JSON loaded into in-memory indexes (or
 embedded H2), Haversine computed in Java, Caffeine for caching, Claude.
 
 **Rationale:** 2000 rows fit comfortably in memory. Category/source hash maps,
@@ -265,7 +265,8 @@ distinct LLM jobs.
 **Reliability patterns for the LLM layer**
 - **Timeouts + fallback**: if the LLM is slow or unavailable, degrade gracefully — return results with `llm_summary: null` rather than failing the request.
 - **Bounded parallelism** for summarizing the returned articles, to keep tail latency down.
-- **Cache query-understanding** by `hash(normalized query + lat/lon)`.
+- **Cache query-understanding** by `hash(normalized query)` (extraction is
+  location-independent; the requester's lat/lon is applied at routing time).
 - **Cost controls**: a cheaper model (e.g. Haiku) and small `max_tokens` for summaries.
 - **Direct-input path**: `entities`/`intent` may be passed as query parameters to bypass the LLM entirely — the brief explicitly permits this, and it makes the system deterministic and usable without an API key.
 
@@ -283,7 +284,7 @@ distinct LLM jobs.
 
 ## 6. Trending design (bonus)
 
-- **Event model:** `{event_id, user_id, article_id, event_type(view|click|share|dwell), lat, lon, geohash, ts}`, with type weights `view=1`, `click=3`, `share=5`.
+- **Event model:** `{event_id, user_id, article_id, event_type(view|click|share|dwell), lat, lon, geohash, ts}`, with type weights `view=1`, `dwell=2`, `click=3`, `share=5`.
 - **Simulator:** a component emits synthetic events biased toward a handful of "hot" articles, clustered around a few city coordinates, with timestamps skewed toward recent.
 - **Score:** `trending = Σ(type_weight · e^(-λ·Δt)) · geo_factor`, where `Δt` is event age (recency decay, e.g. 6-hour half-life) and `geo_factor` rewards events near the requesting location (or restricts to a radius / matching geohash prefix).
 - **Geo-clustering + cache:** bucket by **geohash prefix** (precision ~5 ≈ 5 km). Cache top-N per bucket in Redis under `trending:{geohashPrefix}` with a short TTL (e.g. 60 s) so hot locations serve from cache.

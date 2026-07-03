@@ -126,8 +126,9 @@ com.inshorts.news
 
 - **Controllers** — parse/validate params, delegate, shape the envelope. No logic.
 - **NewsService** — one method per strategy; builds the repository query and maps rows.
-- **QueryService** — calls `LlmClient`, merges multi-intent filters (AND), picks
-  the ranking rule, delegates to `NewsService`.
+- **QueryService** — calls `LlmClient`, resolves location entities via the
+  bundled gazetteer, merges multi-intent filters (AND), picks the ranking rule,
+  delegates to `NewsService`.
 - **SummaryService** — for the returned page, fetch/generate summaries with
   bounded parallelism, cache in Redis, lazily persist to the `articles` table.
 - **TrendingService** — read events, compute scores, cache per geohash prefix.
@@ -150,27 +151,35 @@ CREATE TABLE articles (
     url               TEXT,
     publication_date  TIMESTAMP,
     source_name       TEXT,
-    categories        TEXT[],                 -- keep the array (superset)
+    categories        TEXT[],                 -- original labels (returned in API)
+    categories_norm   TEXT[],                 -- lowercased copy (used for filtering)
     relevance_score   DOUBLE PRECISION,
     latitude          DOUBLE PRECISION,
     longitude         DOUBLE PRECISION,
     geog              GEOGRAPHY(Point, 4326),  -- null when lat/lon null or (0,0)
     llm_summary       TEXT,                    -- lazily persisted
-    search_tsv        TSVECTOR                 -- generated from title+description
+    search_tsv        TSVECTOR GENERATED ALWAYS AS
+                        (to_tsvector('english',
+                           coalesce(title,'') || ' ' || coalesce(description,''))) STORED
 );
 
 -- Indexes
 CREATE INDEX idx_articles_geog        ON articles USING GIST (geog);
 CREATE INDEX idx_articles_tsv         ON articles USING GIN (search_tsv);
-CREATE INDEX idx_articles_categories  ON articles USING GIN (categories);
+CREATE INDEX idx_articles_categories  ON articles USING GIN (categories_norm);
 CREATE INDEX idx_articles_source      ON articles (lower(source_name));
-CREATE INDEX idx_articles_score       ON articles (relevance_score DESC);
-CREATE INDEX idx_articles_pubdate     ON articles (publication_date DESC);
+CREATE INDEX idx_articles_score       ON articles (relevance_score DESC, id DESC);   -- composite: serves keyset (rank_key, id)
+CREATE INDEX idx_articles_pubdate     ON articles (publication_date DESC, id DESC);  -- composite: serves keyset (rank_key, id)
 ```
 
-`search_tsv` is populated at ingest:
-`to_tsvector('english', coalesce(title,'') || ' ' || coalesce(description,''))`.
-`geog` is set only when coordinates are valid and not `(0,0)`.
+`search_tsv` is a **generated column** — the DB keeps it consistent and the app
+never writes it (JPA maps it read-only or omits it). `categories_norm` holds each
+label lowercased, populated at ingest: `@>` array containment is **exact-match**,
+so case-insensitive category filtering needs a normalized copy (the data mixes
+`General`, `DEFENCE`, `IPL_2025` with lowercase labels), while `categories`
+preserves the original labels for responses. `geog` is set only when coordinates
+are valid and not `(0,0)` — the seed file has no such rows (verified), but the
+loader defends anyway.
 
 ### 3.2 `user_events` table (trending)
 
@@ -222,7 +231,7 @@ Client ──▶ QueryController.query(q, lat, lon, limit, [intent], [entities])
              no
              ▼
           QueryService.understand(q)
-             │  CacheService.get(hash(normalizedQuery + lat/lon))  ── hit ─▶ reuse
+             │  CacheService.get(hash(normalizedQuery))  ── hit ─▶ reuse
              │  miss ▼
              │  LlmClient.extract(q)  [circuit breaker + 3–5s timeout]
              │     success ─▶ {entities, intent[], keywords}
@@ -241,15 +250,21 @@ Client ──▶ QueryController.query(q, lat, lon, limit, [intent], [entities])
 
 | Intent | Entity used | Filter |
 |---|---|---|
-| `category` | matched category label | `categories @> ARRAY[lower(:cat)]` (case-insensitive) |
+| `category` | matched category label | `categories_norm @> ARRAY[lower(:cat)]` |
 | `source` | matched source name | `lower(source_name) = lower(:src)` |
-| `nearby` | location entity → geocoded lat/lon (or request lat/lon) | `ST_DWithin(...)` |
+| `nearby` | request lat/lon; else location entity via bundled gazetteer | `ST_DWithin(...)` |
 | `score` | — | `relevance_score >= :threshold` |
 | `search` | keywords | `search_tsv @@ plainto_tsquery(:kw)` |
 
 Multi-intent example: `["category","source"]` →
-`WHERE categories @> ARRAY['technology'] AND lower(source_name)=lower('nyt')`,
+`WHERE categories_norm @> ARRAY['technology'] AND lower(source_name)=lower('nyt')`,
 ranked by `publication_date DESC` (the shared rule of both).
+
+**Location resolution (no external geocoder):** `nearby` routing prefers the
+request's `lat`/`lon`. A location entity is resolved against a small **bundled
+gazetteer of Indian cities** — the corpus coordinates all lie in lat `15.6–22.5`,
+lon `72.6–80.9` (verified) — and an unresolvable location falls back to text
+`search` on the term.
 
 ### 4.3 Summary enrichment (bounded, cached)
 
@@ -260,6 +275,7 @@ enrich(articles):
      s = Redis.get(key)
      if s == null:
         s = article.llm_summary  (from DB, lazily-persisted)
+        if s != null: Redis.set(key, s)       # warm cache from the DB hit
      if s == null:
         s = LlmClient.summarize(title, description)   [timeout, breaker]
         if s != null:
@@ -280,16 +296,18 @@ TrendingService.trending(lat, lon, limit):
    events = EventRepository.findByGeohashPrefix(prefix, sinceWindow)
    score[article] = Σ over events of
         typeWeight(e) * exp(-λ * ageHours(e)) * geoFactor(e, lat, lon)
-        # view=1, click=3, share=5;  λ from 6h half-life;  geoFactor by distance
+        # view=1, dwell=2, click=3, share=5;  λ from 6h half-life;  geoFactor by distance
    top = topN(score, limit)  →  load articles  →  enrich summaries
    Redis.setex("trending:" + prefix, 60s, top)   # single-flight on miss
    return top
 ```
 
 `EventSimulator` (an `ApplicationRunner`) seeds synthetic events at startup:
-biased toward a few "hot" articles, clustered around a handful of city
-coordinates, timestamps skewed recent — so `/trending` returns meaningful data
-without real traffic.
+biased toward a few "hot" articles, clustered around a handful of **Indian city
+coordinates inside the corpus bounding box** (all article coords lie in lat
+`15.6–22.5`, lon `72.6–80.9` — e.g. Mumbai, Pune, Hyderabad, Nagpur), timestamps
+skewed recent — so `/trending` returns meaningful data without real traffic and
+demo requests near those cities hit populated buckets.
 
 ---
 
@@ -312,7 +330,9 @@ object rather than prose:
   unknown values default to `search`.
 - Few-shot examples from the brief pin the taxonomy (e.g. *Elon Musk / Twitter /
   Palo Alto → nearby*; *tech news from NYT → [category, source]*).
-- Result cached in Redis by `hash(normalizedQuery + lat/lon)`.
+- Result cached by `hash(normalizedQuery)` — extraction depends only on the query
+  text; the requester's lat/lon is applied later, at routing time (keying on raw
+  coordinates would fragment the cache into near-unique entries).
 
 ### 5.2 Summaries
 
@@ -347,12 +367,16 @@ also what runs when `ANTHROPIC_API_KEY` is unset.
 |---|---|
 | category / source | `ORDER BY publication_date DESC, relevance_score DESC, id` |
 | score | `WHERE relevance_score >= :threshold ORDER BY relevance_score DESC, id` |
-| search | `ORDER BY (0.6 * ts_rank(search_tsv, plainto_tsquery(:q)) + 0.4 * relevance_score) DESC, id` |
+| search | `ORDER BY (0.6 * ts_rank(search_tsv, plainto_tsquery(:q), 32) + 0.4 * relevance_score) DESC, id` |
 | nearby | `WHERE ST_DWithin(geog,:p,:r) ORDER BY ST_Distance(geog,:p) ASC, id` |
 
-- Search weights (`w_text=0.6`, `w_rel=0.4`) are configurable; both terms in
-  `[0,1]`. Falls back to `ILIKE` scoring if `plainto_tsquery` yields nothing.
-- All strategies append `id` as the final deterministic tie-break.
+- Search weights (`w_text=0.6`, `w_rel=0.4`) are configurable. Raw `ts_rank` is
+  **not** bounded to `[0,1]` — normalization flag `32` rescales it to
+  `rank/(rank+1)`, so both terms share the `[0,1)` scale before blending. Falls
+  back to `ILIKE` scoring if `plainto_tsquery` yields nothing.
+- All strategies append `id` as the final deterministic tie-break, sorted in the
+  **same direction as the rank key**, so the row-comparison keyset predicate in
+  §10.2 stays valid.
 
 ---
 
@@ -395,7 +419,7 @@ news:
     geohash-precision: 5
     cache-ttl-seconds: 60
     half-life-hours: 6
-    type-weights: { view: 1, click: 3, share: 5 }
+    type-weights: { view: 1, dwell: 2, click: 3, share: 5 }
   llm:
     enabled: true                  # false → always heuristic
     model-extract: claude-sonnet-4-6
@@ -449,9 +473,12 @@ scale-out that swaps in behind a seam (§1.1) — no controller/service rewrite.
 - **Ingestion streams the JSON** (Jackson streaming / batched inserts of ~500),
   so memory is constant regardless of file size — a 2000-row file and a 20M-row
   export use the same path.
-- **Keyset pagination**: all list queries order by `(rank_key, id)` and page via
-  `WHERE (rank_key, id) < (:lastRank, :lastId)`, avoiding `OFFSET` scans that
-  degrade with corpus size.
+- **Keyset pagination**: all list queries order by `(rank_key, id)` (uniform sort
+  direction) and page via `WHERE (rank_key, id) < (:lastRank, :lastId)`, avoiding
+  `OFFSET` scans that degrade with corpus size. The public API in this deliverable
+  exposes only the top-N page (`limit`); because the queries are already
+  keyset-shaped, adding a `cursor` param + `next_cursor` response field later is
+  additive, not a rewrite.
 - **Partitioning**: `articles` partitioned by `publication_date` range keeps
   indexes small and lets recency-biased queries hit only hot partitions.
 - **Connection pool** (HikariCP) sized to DB capacity; `statement_timeout` bounds
@@ -470,7 +497,8 @@ request ─▶ Caffeine (local, ms, per-node)
   reads are cache hits; a precompute-at-ingest job warms them.
 - **Trending** cached per geohash prefix with short TTL + jitter; single-flight
   prevents thundering herd on a hot city at expiry.
-- **Query understanding** cached by `hash(normalizedQuery + coarse geo)`.
+- **Query understanding** cached by `hash(normalizedQuery)` (extraction is
+  location-independent; see §5.1).
 
 ### 10.4 Trending at scale (the seam that matters most)
 
@@ -490,9 +518,9 @@ three honest tiers. A reviewer should read §10.1's "scale-out" column as the
 **Tier 1 — Built now (real code, works at scale).** Cheap at 2000 rows and
 genuinely carries to millions:
 
-- Indexed queries (GiST `geog`, GIN `search_tsv` + `categories`, btree score/date/source).
+- Indexed queries (GiST `geog`, GIN `search_tsv` + `categories_norm`, composite btree score/date, btree source).
 - All filtering/ranking/distance pushed into SQL — the corpus is never sorted in app memory.
-- **Keyset (cursor) pagination** — no `OFFSET` scans.
+- **Keyset-shaped queries** — no `OFFSET` anywhere; a public `cursor` param is an additive extension (§10.2).
 - Stateless API tier — horizontal scale with no code change.
 - Layered Caffeine → Redis cache with single-flight on hot keys.
 - Bounded pools + timeouts + rate limiting (Hikari, bulkhead summary executor, LLM timeout, Bucket4j) — load sheds instead of collapsing.
