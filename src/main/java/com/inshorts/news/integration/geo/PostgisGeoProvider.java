@@ -26,7 +26,7 @@ public class PostgisGeoProvider implements GeoProvider {
             FROM articles
             WHERE geog IS NOT NULL
               AND ST_DWithin(geog, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?)
-            ORDER BY distance_m ASC, id DESC
+            ORDER BY distance_m ASC, id ASC
             LIMIT ?
             """;
 

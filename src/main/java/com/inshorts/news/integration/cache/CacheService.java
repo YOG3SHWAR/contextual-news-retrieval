@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -48,6 +49,14 @@ public class CacheService {
         this.redisErrors = meterRegistry.counter("news.cache.redis.errors");
         this.local = Caffeine.newBuilder()
                 .maximumSize(50_000)
+                // Prune the TTL side-table when Caffeine evicts/expires an entry
+                // (but not on REPLACED/EXPLICIT, where a fresh TTL was just set).
+                .removalListener((String key, String value,
+                                  com.github.benmanes.caffeine.cache.RemovalCause cause) -> {
+                    if (cause.wasEvicted()) {
+                        localTtlNanos.remove(key);
+                    }
+                })
                 .expireAfter(new Expiry<String, String>() {
                     @Override
                     public long expireAfterCreate(String key, String value, long currentTime) {
@@ -78,7 +87,7 @@ public class CacheService {
             try {
                 String r = redis.opsForValue().get(key);
                 if (r != null) {
-                    putLocal(key, r, NO_EXPIRY);
+                    putLocal(key, r, remainingRedisTtl(key));
                     hits.increment();
                     return Optional.of(r);
                 }
@@ -89,6 +98,22 @@ public class CacheService {
         }
         misses.increment();
         return Optional.empty();
+    }
+
+    /**
+     * The remaining TTL of a Redis key, so a local backfill doesn't outlive the
+     * distributed entry. -1 (no expiry) → NO_EXPIRY; missing/error → NO_EXPIRY.
+     */
+    private Duration remainingRedisTtl(String key) {
+        try {
+            Long seconds = redis.getExpire(key, TimeUnit.SECONDS);
+            if (seconds != null && seconds > 0) {
+                return Duration.ofSeconds(seconds);
+            }
+        } catch (Exception e) {
+            redisErrors.increment();
+        }
+        return NO_EXPIRY;
     }
 
     /** Store a value in both tiers. {@code ttl} null means no expiry. Never throws. */

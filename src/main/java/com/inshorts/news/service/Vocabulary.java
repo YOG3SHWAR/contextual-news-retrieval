@@ -26,23 +26,22 @@ public class Vocabulary {
     private volatile Set<String> sources;
 
     public Set<String> categories() {
-        Set<String> c = categories;
-        if (c == null) {
-            c = load();
+        if (categories == null) {
+            load();
         }
-        return c;
+        return categories == null ? Set.of() : categories;
     }
 
     public Set<String> sources() {
         if (sources == null) {
             load();
         }
-        return sources;
+        return sources == null ? Set.of() : sources;
     }
 
-    private synchronized Set<String> load() {
+    private synchronized void load() {
         if (categories != null && sources != null) {
-            return categories;
+            return;
         }
         try {
             List<String> cats = jdbcTemplate.queryForList(
@@ -57,11 +56,10 @@ public class Vocabulary {
             this.sources = s;
             log.info("Vocabulary loaded: {} categories, {} sources", c.size(), s.size());
         } catch (Exception e) {
-            log.warn("Failed to load vocabulary; using empty sets", e);
-            this.categories = Set.of();
-            this.sources = Set.of();
+            // Leave fields null so the next call retries after DB recovery
+            // (do NOT cache empty sets, which would permanently degrade routing).
+            log.warn("Failed to load vocabulary; will retry on next use", e);
         }
-        return categories;
     }
 
     /** Force a reload (e.g. after ingestion). */

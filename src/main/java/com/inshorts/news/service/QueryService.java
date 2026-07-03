@@ -212,7 +212,7 @@ public class QueryService {
         boolean searchRank = !geoRank && searchIntent;
         boolean dateRank = !geoRank && !searchRank && (source.isPresent() || category.isPresent());
         if (geoRank) {
-            sql.append(" ORDER BY distance_m ASC, id DESC");
+            sql.append(" ORDER BY distance_m ASC, id ASC");
         } else if (searchRank) {
             sql.append(" ORDER BY (? * ts_rank(search_tsv, plainto_tsquery('english', ?), 32)"
                     + " + ? * coalesce(relevance_score, 0)) DESC, id DESC");

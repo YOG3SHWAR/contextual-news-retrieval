@@ -38,8 +38,6 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class EventSimulator implements ApplicationRunner {
 
-    private static final int EVENT_GEOHASH_PRECISION = 7;
-
     // Indian cities inside the corpus bounding box (lat, lon).
     private static final double[][] CITY_CLUSTERS = {
             {19.0760, 72.8777},  // Mumbai
@@ -67,12 +65,13 @@ public class EventSimulator implements ApplicationRunner {
             return;
         }
 
-        List<UUID> articleIds = jdbcTemplate.queryForList("SELECT id FROM articles", UUID.class);
+        List<UUID> articleIds = jdbcTemplate.queryForList("SELECT id FROM articles ORDER BY id", UUID.class);
         if (articleIds.isEmpty()) {
             log.warn("No articles present — skipping event simulation");
             return;
         }
 
+        int eventGeohashPrecision = props.getTrending().getEventGeohashPrecision();
         Random rnd = new Random(42); // deterministic seed for reproducible demos
         int hotCount = Math.max(1, Math.min(20, articleIds.size() / 10));
         List<UUID> hot = articleIds.subList(0, hotCount);
@@ -95,7 +94,7 @@ public class EventSimulator implements ApplicationRunner {
             // Recency skew: square of uniform biases toward small ages.
             double frac = rnd.nextDouble() * rnd.nextDouble();
             LocalDateTime ts = LocalDateTime.now().minusMinutes((long) (frac * windowHours * 60));
-            String geohash = GeoHash.withCharacterPrecision(lat, lon, EVENT_GEOHASH_PRECISION).toBase32();
+            String geohash = GeoHash.withCharacterPrecision(lat, lon, eventGeohashPrecision).toBase32();
 
             batch.add(UserEvent.builder()
                     .eventId(UUID.randomUUID())
