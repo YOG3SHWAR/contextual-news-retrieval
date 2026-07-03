@@ -3,6 +3,8 @@ package com.inshorts.news.integration.cache;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,10 +36,16 @@ public class CacheService {
     private final StringRedisTemplate redis;
     private final boolean redisConfigured;
     private final Cache<String, String> local;
+    private final Counter hits;
+    private final Counter misses;
+    private final Counter redisErrors;
 
-    public CacheService(ObjectProvider<StringRedisTemplate> redisProvider) {
+    public CacheService(ObjectProvider<StringRedisTemplate> redisProvider, MeterRegistry meterRegistry) {
         this.redis = redisProvider.getIfAvailable();
         this.redisConfigured = this.redis != null;
+        this.hits = meterRegistry.counter("news.cache.hits");
+        this.misses = meterRegistry.counter("news.cache.misses");
+        this.redisErrors = meterRegistry.counter("news.cache.redis.errors");
         this.local = Caffeine.newBuilder()
                 .maximumSize(50_000)
                 .expireAfter(new Expiry<String, String>() {
@@ -63,6 +71,7 @@ public class CacheService {
     public Optional<String> get(String key) {
         String v = local.getIfPresent(key);
         if (v != null) {
+            hits.increment();
             return Optional.of(v);
         }
         if (redisConfigured) {
@@ -70,12 +79,15 @@ public class CacheService {
                 String r = redis.opsForValue().get(key);
                 if (r != null) {
                     putLocal(key, r, NO_EXPIRY);
+                    hits.increment();
                     return Optional.of(r);
                 }
             } catch (Exception e) {
+                redisErrors.increment();
                 log.debug("Redis get failed for {} — degrading to miss: {}", key, e.getMessage());
             }
         }
+        misses.increment();
         return Optional.empty();
     }
 
@@ -94,6 +106,7 @@ public class CacheService {
                     redis.opsForValue().set(key, value, ttl);
                 }
             } catch (Exception e) {
+                redisErrors.increment();
                 log.debug("Redis put failed for {} — kept local only: {}", key, e.getMessage());
             }
         }

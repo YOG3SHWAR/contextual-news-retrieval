@@ -45,6 +45,12 @@ management:
       probes:
         enabled: true
       show-details: always
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          # Readiness gates on Postgres; Redis/LLM loss is "degraded", not "down".
+          include: readinessState,db
   health:
     redis:
       # Redis is optional (degrades gracefully); don't fail readiness on it.

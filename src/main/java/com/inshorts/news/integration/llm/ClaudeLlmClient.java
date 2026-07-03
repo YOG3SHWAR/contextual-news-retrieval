@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.inshorts.news.config.NewsProperties;
 import com.inshorts.news.integration.llm.model.Intent;
 import com.inshorts.news.integration.llm.model.QueryUnderstanding;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +59,8 @@ public class ClaudeLlmClient implements LlmClient {
     }
 
     @Override
+    @CircuitBreaker(name = "llm")
+    @Retry(name = "llm")
     public QueryUnderstanding extract(String query) {
         Map<String, Object> schema = Map.of(
                 "type", "object",
@@ -88,6 +92,8 @@ public class ClaudeLlmClient implements LlmClient {
     }
 
     @Override
+    @CircuitBreaker(name = "llm")
+    @Retry(name = "llm")
     public Optional<String> summarize(String title, String description) {
         if (!isEnabled()) {
             return Optional.empty();
