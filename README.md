@@ -165,7 +165,8 @@ curl "localhost:8080/api/v1/news/query?query=x&intent=source&entities=News18"
 
 `intent` and `entities` may be repeated or comma-separated. Multiple intents are
 AND-combined; results are ranked by the most specific matched strategy
-(nearby > search > source > category > score).
+(nearby > search > {source, category} > score; source and category share the
+publication-date rule).
 
 ### Error envelope
 ```bash
@@ -202,6 +203,8 @@ overridable via environment variables (see `.env.example`).
 | `news.trending.simulator.event-count` | `5000` | Number of simulated events. |
 | `news.llm.enabled` | `true` | Master switch; `false` → always heuristic. |
 | `news.llm.api-key` | `${ANTHROPIC_API_KEY}` | Claude API key (env only). |
+| `news.llm.base-url` | `https://api.anthropic.com/v1/messages` | Anthropic Messages API endpoint. |
+| `news.llm.anthropic-version` | `2023-06-01` | Anthropic API version header. |
 | `news.llm.model-extract` | `claude-sonnet-4-6` | Model for query understanding. |
 | `news.llm.model-summary` | `claude-haiku-4-5-20251001` | Cheap model for summaries. |
 | `news.llm.timeout-ms` | `5000` | Per-call LLM timeout. |

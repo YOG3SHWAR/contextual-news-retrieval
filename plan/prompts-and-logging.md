@@ -1,7 +1,10 @@
 # Plan — Prompt Management & Logging/Observability
 
-Status: **PLAN ONLY** (no code changes yet). Scope: make LLM prompts maintainable
-and make runtime behaviour legible from logs. Traces to
+Status: **IMPLEMENTED** — shipped (commit `8f68d22`; `mvn verify` 45/45 green).
+This document is retained as the design rationale; §2 below describes the
+*pre-change* baseline (kept for context), and the task checklists are marked done.
+Scope: make LLM prompts maintainable and make runtime behaviour legible from logs.
+Traces to
 [`requirements.md`](./requirements.md) §6 (observability) and
 [`design.md`](./design.md) §5 (LLM) / §7 (observability).
 
@@ -16,7 +19,10 @@ and make runtime behaviour legible from logs. Traces to
    leaking secrets/PII, and toggleable per-package at runtime.
 3. No behavioural/API change; no new required infra. All additive and config-gated.
 
-## 2. Current state (honest baseline)
+## 2. Pre-change baseline (historical — now addressed)
+
+> The gaps below describe the state *before* this work; all are now implemented
+> (see the checked task lists in Parts A/B). Kept for reviewer context.
 
 **Prompts**
 - Two prompts are inline `String`s in `ClaudeLlmClient`: `extractionSystemPrompt()`
@@ -85,15 +91,15 @@ and make runtime behaviour legible from logs. Traces to
   in the CI suite.)
 
 ### A5. Tasks (Part A)
-- [ ] A5.1 Add `resources/prompts/extraction-system.txt` + `summary-system.txt`
+- [x] A5.1 Add `resources/prompts/extraction-system.txt` + `summary-system.txt`
       (verbatim current text) with a version header.
-- [ ] A5.2 `NewsProperties.Llm.Prompts` (paths + version overrides); wire under
+- [x] A5.2 `NewsProperties.Llm.Prompts` (paths + version overrides); wire under
       `news.llm.prompts.*` in `application.yml`.
-- [ ] A5.3 `PromptService` (load, cache, render, version, external-path override,
+- [x] A5.3 `PromptService` (load, cache, render, version, external-path override,
       fail-fast).
-- [ ] A5.4 Refactor `ClaudeLlmClient` to inject `PromptService`; remove inline
+- [x] A5.4 Refactor `ClaudeLlmClient` to inject `PromptService`; remove inline
       prompt strings; keep schema/parse in place.
-- [ ] A5.5 `PromptServiceTest` + injection-hygiene test.
+- [x] A5.5 `PromptServiceTest` + injection-hygiene test.
 - **Done when:** prompts editable via file/config without recompiling; `mvn verify`
   green; `ClaudeLlmClient` no longer hardcodes prompt prose; behaviour unchanged.
 
@@ -190,22 +196,25 @@ management:
   `loggers`), how to trace one request by `X-Correlation-Id`, what metrics exist.
 
 ### B8. Tasks (Part B)
-- [ ] B8.1 Level policy + enrich log pattern with MDC; add `path`/`method`/`intent`/
+- [x] B8.1 Level policy + enrich log pattern with MDC; add `path`/`method`/`intent`/
       `strategy`/`degraded` MDC (filter/interceptor).
-- [ ] B8.1b `RequestLoggingInterceptor` — one INFO access-log line per API request
+- [x] B8.1b `RequestLoggingInterceptor` — one INFO access-log line per API request
       (method, path, status, latency, results, degraded) for all `/api/v1/news/**`.
-- [ ] B8.2 Add the DEBUG/INFO logs in QueryService, SummaryService, ClaudeLlmClient,
+- [x] B8.2 Add the DEBUG/INFO logs in QueryService, SummaryService, ClaudeLlmClient,
       providers (per B3).
-- [ ] B8.3 Promote Redis-outage log to WARN (rate-limited/once).
-- [ ] B8.4 Expose `loggers`; document runtime toggle + auth caveat.
-- [ ] B8.5 Add Micrometer timers/counters (B5).
+- [x] B8.3 Promote Redis-outage log to WARN (rate-limited/once).
+- [x] B8.4 Expose `loggers`; document runtime toggle + auth caveat.
+- [x] B8.5 Add Micrometer timers/counters (B5).
 - [ ] B8.6 Optional `logback-spring.xml` JSON encoder gated by profile/property.
-- [ ] B8.7 README "Observability & troubleshooting" section; secret-in-log test.
-      **Docs are reviewer-facing:** written for an evaluator reading cold — explain
-      *why* each level/field exists, give copy-paste commands to see a full request
-      trace by correlation id, and show a sample annotated log line. Same tone for
-      any docs touched (README, `docs/manual-testing.md`).
-- [ ] B8.8 Audit `GlobalExceptionHandler` against the level policy: 5xx/unexpected
+      **Deferred** (not built) — Spring Boot 3.4+ structured logging can be enabled
+      later via config; the human-readable pattern + MDC + access log were sufficient.
+- [x] B8.7 README "Observability & troubleshooting" section (reviewer-facing:
+      explains *why* each level/field exists, copy-paste correlation-id trace
+      commands, annotated sample log line). *Note:* a dedicated secret-in-log unit
+      test was not added; secret safety is enforced by construction — the API key is
+      only ever sent as an HTTP header (never logged) and query text is logged only
+      at DEBUG.
+- [x] B8.8 Audit `GlobalExceptionHandler` against the level policy: 5xx/unexpected
       → ERROR **with** stack trace; datastore-down 503 → ERROR; validation 400 &
       rate-limit 429 → DEBUG/WARN (no ERROR, no trace) so bad client input doesn't
       trigger error-rate alerts. (Currently 400/404/429 are not logged and 503/500
@@ -231,4 +240,4 @@ management:
 ## 4. Estimate
 - Part B: ~1–1.5 hrs (mostly log statements + MDC + config + README).
 - Part A: ~1 hr (files + PromptService + refactor + 2 tests).
-- Verification: `mvn verify` (41 tests) stays green; add ~3 new unit tests.
+- Verification: `mvn verify` stayed green — 41 → **45 tests** (added `PromptServiceTest`).

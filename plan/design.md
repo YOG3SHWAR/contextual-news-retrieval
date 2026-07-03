@@ -75,34 +75,47 @@ Three external dependencies:
 
 ### 2.1 Package layout
 
+> As-built (reflects the shipped code; the LLM/logging/prompt observability work is
+> in `plan/prompts-and-logging.md`).
+
 ```
 com.inshorts.news
-├── NewsApplication.java              # @SpringBootApplication entry point
+├── NewsApplication.java              # @SpringBootApplication + @ConfigurationPropertiesScan
 ├── config/
-│   ├── RedisConfig.java              # RedisTemplate, connection factory
-│   ├── ResilienceConfig.java         # Resilience4j circuit breaker, bulkhead
-│   ├── RateLimitConfig.java          # Bucket4j buckets
-│   ├── AsyncConfig.java              # bounded summary executor pool
-│   └── ObservabilityConfig.java      # Micrometer, correlation-id filter
+│   ├── NewsProperties.java           # binds the news.* config tree
+│   ├── AsyncConfig.java              # bounded summary executor (bulkhead)
+│   └── WebConfig.java                # registers request-logging + rate-limit interceptors
+│   # (Redis/JPA/actuator/resilience/rate-limit are Spring Boot auto-config + application.yml;
+│   #  resilience4j breaker/retry are annotation-driven on ClaudeLlmClient.)
 ├── web/
 │   ├── NewsController.java           # R1–R6 endpoints
 │   ├── QueryController.java          # R7 /query endpoint
-│   ├── dto/                          # ArticleDto, NewsResponse, ErrorResponse
-│   └── GlobalExceptionHandler.java   # @ControllerAdvice, uniform errors
+│   ├── ResponseAssembler.java        # enrich + build the envelope (single seam)
+│   ├── RequestValidator.java         # §5 validation rules
+│   ├── RequestLoggingInterceptor.java# INFO access log per request
+│   ├── RateLimiter.java / RateLimitInterceptor.java  # Bucket4j on /query
+│   ├── CorrelationIdFilter.java      # MDC correlation id + X-Correlation-Id
+│   ├── GlobalExceptionHandler.java   # @RestControllerAdvice, uniform errors
+│   ├── dto/                          # ArticleDto, ArticleMapper, NewsResponse, ErrorResponse
+│   └── error/                        # BadRequestException, RateLimitExceededException
 ├── service/
 │   ├── NewsService.java              # retrieval orchestration + ranking
 │   ├── QueryService.java             # LLM routing, multi-intent merge
-│   ├── SummaryService.java           # llm_summary generation + cache
+│   ├── SummaryService.java           # llm_summary generation + cache + resolution metrics
 │   ├── TrendingService.java          # trending score + geohash cache
-│   └── EventSimulator.java           # synthetic user-event generator
+│   ├── EventSimulator.java           # synthetic user-event generator (ApplicationRunner)
+│   ├── Vocabulary.java               # distinct categories/sources (lazy)
+│   ├── CityGazetteer.java            # bundled Indian-city coordinates
+│   └── ArticleHit.java               # carrier record (Article + optional distanceKm)
 ├── integration/
 │   ├── llm/
 │   │   ├── LlmClient.java            # interface
-│   │   ├── ClaudeLlmClient.java      # Anthropic HTTP + tool-use extraction
-│   │   ├── HeuristicIntentExtractor # keyword fallback (no LLM)
-│   │   └── model/                    # QueryUnderstanding, ExtractionResult
+│   │   ├── ClaudeLlmClient.java      # Anthropic HTTP + tool-use extraction (breaker/retry)
+│   │   ├── HeuristicIntentExtractor  # keyword fallback (no LLM)
+│   │   ├── prompt/PromptService.java # loads externalized, versioned prompts
+│   │   └── model/                    # QueryUnderstanding, Intent
 │   ├── search/                       # ── SCALE SEAM ──
-│   │   ├── SearchProvider.java       # interface: filter+rank → article ids
+│   │   ├── SearchProvider.java       # interface: filter+rank → articles
 │   │   └── PostgresSearchProvider    # tsvector/ts_rank now; Elasticsearch later
 │   ├── geo/                          # ── SCALE SEAM ──
 │   │   ├── GeoProvider.java          # interface: nearby / distance
@@ -110,15 +123,17 @@ com.inshorts.news
 │   ├── events/                       # ── SCALE SEAM ──
 │   │   ├── EventStream.java          # interface: publish/consume user events
 │   │   └── InProcessEventStream      # simulator now; Kafka consumer later
-│   └── cache/CacheService.java       # local(Caffeine)+Redis, single-flight
+│   └── cache/CacheService.java       # local(Caffeine)+Redis, single-flight, metrics
 ├── repository/
-│   ├── ArticleRepository.java        # JPA + native geo/FTS queries; keyset paging
-│   └── EventRepository.java          # user-event persistence
+│   ├── ArticleRepository.java        # JPA base (CRUD + populated-count)
+│   ├── ArticleQueryRepository.java   # native keyset-shaped retrieval queries
+│   ├── ArticleRowMapper.java         # shared JDBC row → Article mapper
+│   └── EventRepository.java          # user-event persistence (geohash-prefix query)
 ├── domain/
-│   ├── Article.java                  # @Entity, geography column
+│   ├── Article.java                  # @Entity (geog/tsv driven by native SQL)
 │   └── UserEvent.java                # @Entity
 └── ingest/
-    ├── DataLoader.java               # ApplicationRunner, idempotent upsert
+    ├── DataLoader.java               # ApplicationRunner, streaming idempotent upsert
     └── NewsJsonRecord.java           # Jackson binding for source JSON
 ```
 
@@ -402,6 +417,12 @@ state, Redis availability, trending cache hit-rate).
 ---
 
 ## 8. Configuration
+
+> Abbreviated snapshot of the key knobs. The **complete, current** reference (incl.
+> `news.llm.base-url`, `anthropic-version`, `news.llm.prompts.*`, `news.ratelimit.*`,
+> trending `event-geohash-precision`/`window-hours`) is the table in
+> [`../README.md`](../README.md#configuration-reference), kept in sync with
+> `application.yml`.
 
 ```yaml
 # application.yml (values overridable by env)

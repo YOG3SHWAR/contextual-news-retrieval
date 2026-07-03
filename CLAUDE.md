@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Note (for reviewers):** this file captures the *original task brief / early guidance*.
+> The authoritative **as-built** documentation is [`README.md`](./README.md) (run,
+> endpoints, config, observability), [`plan/requirements.md`](./plan/requirements.md),
+> [`plan/design.md`](./plan/design.md), and [`docs/manual-testing.md`](./docs/manual-testing.md).
+> Where this brief differs from the final API (e.g. it shows a simplified response
+> without `id`/`degraded`/`distance_km`, or says "Haversine"), the as-built docs win —
+> the implementation returns the full envelope and uses PostGIS `ST_Distance`.
+
 ## Project Overview
 
 This is a **Contextual News Data Retrieval System** — a backend take-home task for an Inshorts Software Engineer role. The goal is to build a REST API that retrieves news articles from `news_data.json`, processes queries using an LLM to extract entities/intent, and enriches results with LLM-generated summaries.
