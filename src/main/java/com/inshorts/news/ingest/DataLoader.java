@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -42,6 +43,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
+@Order(1)
 @RequiredArgsConstructor
 public class DataLoader implements ApplicationRunner {
 

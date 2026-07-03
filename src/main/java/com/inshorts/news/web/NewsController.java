@@ -2,6 +2,7 @@ package com.inshorts.news.web;
 
 import com.inshorts.news.config.NewsProperties;
 import com.inshorts.news.service.NewsService;
+import com.inshorts.news.service.TrendingService;
 import com.inshorts.news.web.dto.NewsResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -10,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Retrieval endpoints R1–R5 (requirements §3.1). Controllers only parse/validate
+ * Retrieval endpoints R1–R6 (requirements §3.1). Controllers only parse/validate
  * parameters, delegate to {@link NewsService}, and shape the envelope.
  */
 @RestController
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class NewsController {
 
     private final NewsService newsService;
+    private final TrendingService trendingService;
     private final ResponseAssembler assembler;
     private final NewsProperties props;
 
@@ -73,5 +75,18 @@ public class NewsController {
         return assembler.assemble(
                 newsService.nearby(lat, lon, effectiveRadius, lim),
                 String.format("nearby(%.4f,%.4f,%.1fkm)", lat, lon, effectiveRadius));
+    }
+
+    /** R6: GET /trending?lat=&lon=&limit= */
+    @GetMapping("/trending")
+    public NewsResponse trending(@RequestParam double lat,
+                                 @RequestParam double lon,
+                                 @RequestParam(defaultValue = "5") int limit) {
+        RequestValidator.validateLat(lat);
+        RequestValidator.validateLon(lon);
+        int lim = RequestValidator.clampLimit(limit);
+        return assembler.assemble(
+                trendingService.trending(lat, lon, lim),
+                String.format("trending(%.4f,%.4f)", lat, lon));
     }
 }
