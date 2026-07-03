@@ -241,15 +241,21 @@ See [`plan/design.md`](plan/design.md) for the full blueprint and
 mvn verify   # requires Docker (Testcontainers provisions Postgres/PostGIS + Redis)
 ```
 
-The suite (40 tests) covers ingestion idempotency + geo normalization, R1–R7
+The suite (41 tests) covers ingestion idempotency + geo normalization, R1–R7
 contract + validation envelopes, PostGIS distance correctness, blended search
 ranking, LLM fault-injection (→ 200 `degraded`), trending score/cache, a
 concurrency smoke test, and pure validation/parsing units. Tests run offline
 (LLM disabled) against real containers via the singleton-container pattern.
 
-> **Colima users:** Docker 29 requires client API ≥ 1.40. Run with
-> `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` and
-> `mvn verify -DargLine="-Dapi.version=1.43"`. Docker Desktop needs no such flags.
+The build pins the Docker Engine API version (`api.version=1.43`, in
+`pom.xml`) so Testcontainers works flag-free against modern Docker (Engine 29
+requires API ≥ 1.40). On **Docker Desktop**, plain `mvn verify` just works.
+
+> **Colima users:** point Testcontainers at the Colima socket (the API version
+> is already handled by the build):
+> ```bash
+> DOCKER_HOST="unix://$HOME/.colima/default/docker.sock" TESTCONTAINERS_RYUK_DISABLED=true mvn verify
+> ```
 
 ## Security
 
