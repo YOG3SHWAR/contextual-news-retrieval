@@ -1,0 +1,114 @@
+spring:
+  application:
+    name: contextual-news-retrieval
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/news}
+    username: ${DB_USERNAME:news}
+    password: ${DB_PASSWORD:news}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: 2
+      connection-timeout: 3000
+      # Bound any single query so one heavy request can't starve the pool.
+      connection-init-sql: SET statement_timeout = '5000ms'
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 100
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 500ms
+      connect-timeout: 500ms
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  health:
+    redis:
+      # Redis is optional (degrades gracefully); don't fail readiness on it.
+      enabled: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+news:
+  ingest:
+    file: ${NEWS_INGEST_FILE:data/news_data.json}
+    skip-if-populated: true
+    batch-size: 500
+  search:
+    weight-text: 0.6
+    weight-relevance: 0.4
+  nearby:
+    default-radius-km: 10
+    max-radius-km: 500
+  trending:
+    geohash-precision: 5
+    event-geohash-precision: 7
+    cache-ttl-seconds: 60
+    half-life-hours: 6
+    window-hours: 48
+    type-weights:
+      view: 1
+      dwell: 2
+      click: 3
+      share: 5
+    simulator:
+      enabled: true
+      event-count: 5000
+  llm:
+    enabled: ${NEWS_LLM_ENABLED:true}
+    api-key: ${ANTHROPIC_API_KEY:}
+    base-url: https://api.anthropic.com/v1/messages
+    anthropic-version: "2023-06-01"
+    model-extract: claude-sonnet-4-6
+    model-summary: claude-haiku-4-5-20251001
+    timeout-ms: 5000
+    max-summary-tokens: 120
+    summary-concurrency: 4
+  ratelimit:
+    query-capacity: 30
+    query-refill-per-minute: 30
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      llm:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+  retry:
+    instances:
+      llm:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        enable-randomized-wait: true
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{correlationId:-}]"
