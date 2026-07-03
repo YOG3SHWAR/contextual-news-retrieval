@@ -5,8 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.inshorts.news.config.NewsProperties;
 import com.inshorts.news.integration.llm.model.Intent;
 import com.inshorts.news.integration.llm.model.QueryUnderstanding;
+import com.inshorts.news.integration.llm.prompt.PromptService;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -26,8 +29,10 @@ import org.springframework.web.client.RestClient;
  *       "no new facts" instruction to guard against hallucination.</li>
  * </ul>
  *
- * Every call has an explicit connect+read timeout. Failures propagate as
- * exceptions so the caller can fall back (heuristic / null summary + degraded).
+ * System prompts are externalized ({@link PromptService}); the tool schema and
+ * response parsing stay here (parser contract). Every call has an explicit
+ * connect+read timeout; failures propagate as exceptions so the caller can fall
+ * back (heuristic / null summary + degraded).
  */
 @Slf4j
 @Component
@@ -37,11 +42,16 @@ public class ClaudeLlmClient implements LlmClient {
 
     private final NewsProperties.Llm cfg;
     private final ObjectMapper mapper;
+    private final PromptService prompts;
+    private final MeterRegistry meterRegistry;
     private final RestClient client;
 
-    public ClaudeLlmClient(NewsProperties props, ObjectMapper mapper) {
+    public ClaudeLlmClient(NewsProperties props, ObjectMapper mapper,
+                           PromptService prompts, MeterRegistry meterRegistry) {
         this.cfg = props.getLlm();
         this.mapper = mapper;
+        this.prompts = prompts;
+        this.meterRegistry = meterRegistry;
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) cfg.getTimeoutMs());
         factory.setReadTimeout((int) cfg.getTimeoutMs());
@@ -75,7 +85,7 @@ public class ClaudeLlmClient implements LlmClient {
         Map<String, Object> body = Map.of(
                 "model", cfg.getModelExtract(),
                 "max_tokens", 512,
-                "system", extractionSystemPrompt(),
+                "system", prompts.extractionSystem(),
                 "tools", List.of(Map.of(
                         "name", EXTRACT_TOOL,
                         "description", "Extract entities, retrieval intents, and search keywords from a news query.",
@@ -83,12 +93,23 @@ public class ClaudeLlmClient implements LlmClient {
                 "tool_choice", Map.of("type", "tool", "name", EXTRACT_TOOL),
                 "messages", List.of(Map.of("role", "user", "content", query)));
 
-        JsonNode response = post(body);
-        JsonNode toolInput = findToolInput(response);
-        if (toolInput == null) {
-            throw new IllegalStateException("Claude returned no tool_use block for extraction");
+        log.debug("LLM extract: model={} promptVersion={}", cfg.getModelExtract(), prompts.extractionVersion());
+        Timer.Sample sample = Timer.start(meterRegistry);
+        String outcome = "success";
+        try {
+            JsonNode response = post(body);
+            JsonNode toolInput = findToolInput(response);
+            if (toolInput == null) {
+                throw new IllegalStateException("Claude returned no tool_use block for extraction");
+            }
+            return toUnderstanding(toolInput);
+        } catch (RuntimeException e) {
+            outcome = "failure";
+            throw e;
+        } finally {
+            sample.stop(meterRegistry.timer("news.llm.call", "operation", "extract",
+                    "outcome", outcome, "prompt_version", prompts.extractionVersion()));
         }
-        return toUnderstanding(toolInput);
     }
 
     @Override
@@ -102,14 +123,23 @@ public class ClaudeLlmClient implements LlmClient {
         Map<String, Object> body = Map.of(
                 "model", cfg.getModelSummary(),
                 "max_tokens", cfg.getMaxSummaryTokens(),
-                "system", "You summarize a news item in one or two sentences using ONLY the "
-                        + "provided title and description. Do not add facts, opinions, or details "
-                        + "not present in the input. Output only the summary text.",
+                "system", prompts.summarySystem(),
                 "messages", List.of(Map.of("role", "user", "content", userContent)));
 
-        JsonNode response = post(body);
-        String text = extractText(response);
-        return (text == null || text.isBlank()) ? Optional.empty() : Optional.of(text.trim());
+        log.debug("LLM summarize: model={} promptVersion={}", cfg.getModelSummary(), prompts.summaryVersion());
+        Timer.Sample sample = Timer.start(meterRegistry);
+        String outcome = "success";
+        try {
+            JsonNode response = post(body);
+            String text = extractText(response);
+            return (text == null || text.isBlank()) ? Optional.empty() : Optional.of(text.trim());
+        } catch (RuntimeException e) {
+            outcome = "failure";
+            throw e;
+        } finally {
+            sample.stop(meterRegistry.timer("news.llm.call", "operation", "summarize",
+                    "outcome", outcome, "prompt_version", prompts.summaryVersion()));
+        }
     }
 
     // --- HTTP + parsing helpers ------------------------------------------------
@@ -181,20 +211,5 @@ public class ClaudeLlmClient implements LlmClient {
 
     private static String safe(String s) {
         return s == null ? "" : s;
-    }
-
-    private static String extractionSystemPrompt() {
-        return """
-                You classify news search queries. Extract:
-                - entities: named people, organizations, and locations mentioned.
-                - intent: one or more of category, score, search, source, nearby.
-                - keywords: normalized search terms.
-                Guidance:
-                - A location + "near"/"in" a place => nearby (e.g. "Elon Musk Twitter news near Palo Alto" => nearby).
-                - "top/latest <topic> news from <publication>" => [category, source].
-                - A named news outlet => source. A topic like technology/sports => category.
-                - High-quality / most relevant => score. Otherwise => search.
-                Return only the tool call.
-                """;
     }
 }

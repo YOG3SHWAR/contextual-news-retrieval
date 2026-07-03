@@ -39,7 +39,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        include: health,info,prometheus,metrics,loggers
   endpoint:
     health:
       probes:
@@ -94,6 +94,13 @@ news:
     timeout-ms: 5000
     max-summary-tokens: 120
     summary-concurrency: 4
+    prompts:
+      # Externalized, versioned system prompts. Override *-path with a file:/classpath:
+      # location to change prompts without a rebuild; versions are logged + metered.
+      extraction-path: classpath:prompts/extraction-system.txt
+      summary-path: classpath:prompts/summary-system.txt
+      extraction-version: extraction.v1
+      summary-version: summary.v1
   ratelimit:
     query-capacity: 30
     query-refill-per-minute: 30
@@ -116,5 +123,12 @@ resilience4j:
         enable-randomized-wait: true
 
 logging:
+  level:
+    # Flip to DEBUG (statically here, via LOGGING_LEVEL_COM_INSHORTS_NEWS=DEBUG, or at
+    # runtime via POST /actuator/loggers/com.inshorts.news) to see the full per-request
+    # trace: extracted intent/entities, resolved filters, chosen strategy, summary path.
+    com.inshorts.news: INFO
+    # Per-request INFO access log (method, path, status, latency, results, degraded).
+    com.inshorts.news.access: INFO
   pattern:
     level: "%5p [${spring.application.name},%X{correlationId:-}]"

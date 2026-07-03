@@ -37,7 +37,10 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         try {
             filterChain.doFilter(request, response);
         } finally {
-            MDC.remove(MDC_KEY);
+            // Clear the entire MDC (correlation id + any per-request access-log keys
+            // like intent/strategy/results/degraded) so nothing leaks to the next
+            // request on a pooled thread.
+            MDC.clear();
         }
     }
 }

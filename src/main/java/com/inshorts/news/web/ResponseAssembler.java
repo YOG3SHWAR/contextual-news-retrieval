@@ -6,6 +6,7 @@ import com.inshorts.news.web.dto.ArticleMapper;
 import com.inshorts.news.web.dto.NewsResponse;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,7 +28,11 @@ public class ResponseAssembler {
      */
     public NewsResponse assemble(List<ArticleHit> hits, String query, boolean baseDegraded) {
         boolean enrichDegraded = summaryService.enrich(hits);
-        return NewsResponse.of(mapper.toDtos(hits), query, baseDegraded || enrichDegraded);
+        boolean degraded = baseDegraded || enrichDegraded;
+        // Surface result metadata for the per-request access log (RequestLoggingInterceptor).
+        MDC.put(RequestLoggingInterceptor.MDC_RESULTS, Integer.toString(hits.size()));
+        MDC.put(RequestLoggingInterceptor.MDC_DEGRADED, Boolean.toString(degraded));
+        return NewsResponse.of(mapper.toDtos(hits), query, degraded);
     }
 
     public NewsResponse assemble(List<ArticleHit> hits, String query) {

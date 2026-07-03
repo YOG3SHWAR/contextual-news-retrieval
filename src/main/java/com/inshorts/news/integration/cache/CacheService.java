@@ -40,6 +40,10 @@ public class CacheService {
     private final Counter hits;
     private final Counter misses;
     private final Counter redisErrors;
+    // Tracks Redis health so we log a single WARN on an outage (and INFO on
+    // recovery) instead of spamming a line per failed call.
+    private final java.util.concurrent.atomic.AtomicBoolean redisHealthy =
+            new java.util.concurrent.atomic.AtomicBoolean(true);
 
     public CacheService(ObjectProvider<StringRedisTemplate> redisProvider, MeterRegistry meterRegistry) {
         this.redis = redisProvider.getIfAvailable();
@@ -86,14 +90,14 @@ public class CacheService {
         if (redisConfigured) {
             try {
                 String r = redis.opsForValue().get(key);
+                markRedisHealthy();
                 if (r != null) {
                     putLocal(key, r, remainingRedisTtl(key));
                     hits.increment();
                     return Optional.of(r);
                 }
             } catch (Exception e) {
-                redisErrors.increment();
-                log.debug("Redis get failed for {} — degrading to miss: {}", key, e.getMessage());
+                markRedisDown("get", e);
             }
         }
         misses.increment();
@@ -130,10 +134,25 @@ public class CacheService {
                 } else {
                     redis.opsForValue().set(key, value, ttl);
                 }
+                markRedisHealthy();
             } catch (Exception e) {
-                redisErrors.increment();
-                log.debug("Redis put failed for {} — kept local only: {}", key, e.getMessage());
+                markRedisDown("put", e);
             }
+        }
+    }
+
+    private void markRedisDown(String op, Exception e) {
+        redisErrors.increment();
+        if (redisHealthy.compareAndSet(true, false)) {
+            log.warn("Redis unavailable ({}) — degrading to local-only cache: {}", op, e.getMessage());
+        } else {
+            log.debug("Redis {} failed (still down): {}", op, e.getMessage());
+        }
+    }
+
+    private void markRedisHealthy() {
+        if (redisHealthy.compareAndSet(false, true)) {
+            log.info("Redis connectivity recovered");
         }
     }
 

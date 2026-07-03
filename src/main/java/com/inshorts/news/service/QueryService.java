@@ -9,6 +9,8 @@ import com.inshorts.news.integration.llm.LlmClient;
 import com.inshorts.news.integration.llm.model.Intent;
 import com.inshorts.news.integration.llm.model.QueryUnderstanding;
 import com.inshorts.news.repository.ArticleRowMapper;
+import com.inshorts.news.web.RequestLoggingInterceptor;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -19,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -47,6 +50,7 @@ public class QueryService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final NewsProperties props;
+    private final MeterRegistry meterRegistry;
 
     /** Result of routing: the ranked hits plus whether understanding was degraded. */
     public record RoutedResult(List<ArticleHit> hits, boolean degraded, String echo) {
@@ -66,24 +70,34 @@ public class QueryService {
                                List<String> directIntents, List<String> directEntities) {
         boolean degraded;
         QueryUnderstanding understanding;
+        String source;
 
         if ((directIntents != null && !directIntents.isEmpty())
                 || (directEntities != null && !directEntities.isEmpty())) {
             // Direct-input escape hatch: deterministic, no LLM (§3.2).
             understanding = fromDirect(directIntents, directEntities, query);
             degraded = false;
+            source = "direct";
         } else if (llmClient.isEnabled()) {
             QueryUnderstanding fromLlm = understandWithLlm(query);
             if (fromLlm != null) {
                 understanding = fromLlm;
                 degraded = false;
+                source = "llm";
             } else {
                 understanding = heuristic.extract(query);
                 degraded = true;
+                source = "heuristic";
             }
         } else {
             understanding = heuristic.extract(query);
             degraded = true;
+            source = "heuristic";
+        }
+
+        if (log.isDebugEnabled()) {
+            log.debug("Query understanding: source={} intents={} entities={} keywords={} degraded={}",
+                    source, understanding.intents(), understanding.entities(), understanding.keywords(), degraded);
         }
 
         List<ArticleHit> hits = route(understanding, query, lat, lon, limit);
@@ -152,6 +166,19 @@ public class QueryService {
 
         int filterCount = (category.isPresent() ? 1 : 0) + (source.isPresent() ? 1 : 0)
                 + (geo.isPresent() ? 1 : 0) + (scoreIntent ? 1 : 0) + (searchIntent ? 1 : 0);
+
+        // Observability: surface routing on the access-log line (MDC) + a metric per intent.
+        String strategy = strategyLabel(filterCount, geo.isPresent(), searchIntent,
+                source.isPresent(), category.isPresent(), scoreIntent);
+        MDC.put(RequestLoggingInterceptor.MDC_INTENT, intents.toString());
+        MDC.put(RequestLoggingInterceptor.MDC_STRATEGY, strategy);
+        intents.forEach(i -> meterRegistry.counter("news.query.intent", "intent",
+                i.name().toLowerCase(Locale.ROOT)).increment());
+        if (log.isDebugEnabled()) {
+            log.debug("Query routing: strategy={} filters=[category={}, source={}, geo={}, score={}, search={}] searchText='{}'",
+                    strategy, category.orElse("-"), source.orElse("-"),
+                    geo.map(c -> c.lat() + "," + c.lon()).orElse("-"), scoreIntent, searchIntent, searchText);
+        }
 
         // Single-strategy fast paths reuse the tested NewsService queries
         // (incl. the search ILIKE fallback).
@@ -285,6 +312,23 @@ public class QueryService {
             }
         }
         return Optional.empty();
+    }
+
+    /** Label describing the chosen retrieval strategy, for logs/metrics. */
+    private static String strategyLabel(int filterCount, boolean geo, boolean search,
+                                        boolean source, boolean category, boolean score) {
+        if (filterCount == 1) {
+            if (geo) return "nearby";
+            if (search) return "search";
+            if (category) return "category";
+            if (source) return "source";
+            if (score) return "score";
+        }
+        // multi-intent: ranked by the most specific matched strategy
+        if (geo) return "multi:nearby";
+        if (search) return "multi:search";
+        if (source || category) return "multi:date";
+        return "multi:score";
     }
 
     private String deriveSearchText(QueryUnderstanding u, String query) {

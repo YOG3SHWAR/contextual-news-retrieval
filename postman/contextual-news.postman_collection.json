@@ -1,0 +1,518 @@
+{
+  "info": {
+    "name": "Contextual News Retrieval System",
+    "_postman_id": "9f6d2a10-3b4c-4a2e-9f1a-0c5e7b2d1a01",
+    "description": "All endpoints for the Contextual News Retrieval System (Spring Boot + PostGIS + Redis + Claude).\n\nBase path: /api/v1/news. Set the `baseUrl` collection variable (default http://localhost:8080).\n\nNotes:\n- The seed corpus is entirely in western/central India (lat 15.6-22.5, lon 72.6-80.9). Use Indian coordinates for /nearby and /trending (defaults: Mumbai 19.07, 72.88).\n- Without an ANTHROPIC_API_KEY the app runs in heuristic mode: every article has `llm_summary: null` and responses are `degraded: true`, but retrieval still returns 200.\n- Empty result sets are 200 with total:0 (never 404).\n\nEach request includes test assertions (Postman `pm.test`). Run the whole collection with the Collection Runner.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "lat", "value": "19.07", "type": "string" },
+    { "key": "lon", "value": "72.88", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level assertions applied to every request.",
+          "pm.test('Response time is reasonable (< 5s)', function () {",
+          "  pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Retrieval (R1-R5)",
+      "item": [
+        {
+          "name": "R1 - Category (case-insensitive, newest first)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('envelope shape', () => { pm.expect(b).to.have.all.keys('articles','total','query','degraded'); pm.expect(b.articles).to.be.an('array'); });",
+              "pm.test('each article has category containing the requested value (ci)', () => {",
+              "  b.articles.forEach(a => pm.expect(a.category.map(c=>c.toLowerCase())).to.include('world'));",
+              "});",
+              "pm.test('publication_date descending', () => {",
+              "  const d = b.articles.map(a => a.publication_date);",
+              "  for (let i=1;i<d.length;i++) pm.expect(d[i-1] >= d[i]).to.be.true;",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/category?category=world&limit=3",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","category"],
+              "query": [
+                { "key": "category", "value": "world" },
+                { "key": "limit", "value": "3" }
+              ]
+            },
+            "description": "R1: articles whose category contains the value (case-insensitive). Try DEFENCE, IPL_2025, General to see the noisy-label matching."
+          }
+        },
+        {
+          "name": "R2 - Score (relevance threshold)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('all relevance_score >= threshold and descending', () => {",
+              "  const s = b.articles.map(a => a.relevance_score);",
+              "  s.forEach(v => pm.expect(v).to.be.at.least(0.8));",
+              "  for (let i=1;i<s.length;i++) pm.expect(s[i-1] >= s[i]).to.be.true;",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/score?threshold=0.8&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","score"],
+              "query": [
+                { "key": "threshold", "value": "0.8" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "R2: relevance_score >= threshold (default 0.7), ranked by score desc."
+          }
+        },
+        {
+          "name": "R3 - Search (blended full-text ranking)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('returns an articles array', () => pm.expect(b.articles).to.be.an('array'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/search?query=government policy&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","search"],
+              "query": [
+                { "key": "query", "value": "government policy" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "R3: full-text match in title/description, ranked by 0.6*ts_rank + 0.4*relevance_score (ILIKE fallback)."
+          }
+        },
+        {
+          "name": "R4 - Source (case-insensitive)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('all results share the requested source (ci)', () => {",
+              "  b.articles.forEach(a => pm.expect((a.source_name||'').toLowerCase()).to.eql('news18'));",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/source?source=news18&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","source"],
+              "query": [
+                { "key": "source", "value": "news18" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "R4: source_name matched case-insensitively; queried lowercase 'news18' returns 'News18'."
+          }
+        },
+        {
+          "name": "R5 - Nearby (PostGIS, distance ascending)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('distance_km present, <= radius, ascending', () => {",
+              "  const d = b.articles.map(a => a.distance_km);",
+              "  d.forEach(v => { pm.expect(v).to.be.a('number'); pm.expect(v).to.be.at.most(50); });",
+              "  for (let i=1;i<d.length;i++) pm.expect(d[i-1] <= d[i]).to.be.true;",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/nearby?lat={{lat}}&lon={{lon}}&radius=50&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","nearby"],
+              "query": [
+                { "key": "lat", "value": "{{lat}}" },
+                { "key": "lon", "value": "{{lon}}" },
+                { "key": "radius", "value": "50" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "R5: within radius km via ST_DWithin, ordered by ST_Distance asc; distance_km populated. Use Indian coordinates."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Trending (R6)",
+      "item": [
+        {
+          "name": "R6 - Trending (location-aware, cached)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('returns an articles array', () => pm.expect(b.articles).to.be.an('array'));",
+              "pm.test('query echoes location', () => pm.expect(b.query).to.include('trending'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/trending?lat={{lat}}&lon={{lon}}&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","trending"],
+              "query": [
+                { "key": "lat", "value": "{{lat}}" },
+                { "key": "lon", "value": "{{lon}}" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "R6: trending score = sum(typeWeight * e^(-lambda*dt) * geoFactor), cached per geohash prefix (~60s TTL). Use a seeded city (Mumbai/Pune/Hyderabad/Nagpur/Vijayawada)."
+          }
+        },
+        {
+          "name": "R6 - Trending (remote point -> empty)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('no events near mid-ocean -> total 0', () => pm.expect(b.total).to.eql(0));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/trending?lat=0&lon=-40&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","trending"],
+              "query": [
+                { "key": "lat", "value": "0" },
+                { "key": "lon", "value": "-40" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "Sanity: a location with no nearby events returns an empty feed (200, total 0)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "LLM Query (R7)",
+      "item": [
+        {
+          "name": "R7 - Direct intent+entities (no API key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('routes like /category=world', () => {",
+              "  b.articles.forEach(a => pm.expect(a.category.map(c=>c.toLowerCase())).to.include('world'));",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/query?query=world news&intent=category&entities=world",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","query"],
+              "query": [
+                { "key": "query", "value": "world news" },
+                { "key": "intent", "value": "category" },
+                { "key": "entities", "value": "world" }
+              ]
+            },
+            "description": "R7 direct-input escape hatch: deterministic routing with no LLM / no API key. intent and entities may be repeated or comma-separated."
+          }
+        },
+        {
+          "name": "R7 - Direct source intent (no API key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('all results from News18', () => b.articles.forEach(a => pm.expect((a.source_name||'').toLowerCase()).to.eql('news18')));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/query?query=x&intent=source&entities=News18",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","query"],
+              "query": [
+                { "key": "query", "value": "x" },
+                { "key": "intent", "value": "source" },
+                { "key": "entities", "value": "News18" }
+              ]
+            },
+            "description": "R7: direct source routing."
+          }
+        },
+        {
+          "name": "R7 - Multi-intent heuristic (no API key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('returns array; degraded true without API key', () => { pm.expect(b.articles).to.be.an('array'); pm.expect(b.degraded).to.be.true; });"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/query?query=top tech news from News18",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","query"],
+              "query": [
+                { "key": "query", "value": "top tech news from News18" }
+              ]
+            },
+            "description": "R7: natural-language, multi-intent (category + source). In heuristic mode (no key) it still routes and returns 200 degraded:true."
+          }
+        },
+        {
+          "name": "R7 - Natural language + location (needs API key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('articles array present', () => pm.expect(b.articles).to.be.an('array'));",
+              "// With a real ANTHROPIC_API_KEY: expect b.degraded === false and non-null llm_summary."
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/query?query=Latest Elon Musk Twitter news near Mumbai&lat={{lat}}&lon={{lon}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","query"],
+              "query": [
+                { "key": "query", "value": "Latest Elon Musk Twitter news near Mumbai" },
+                { "key": "lat", "value": "{{lat}}" },
+                { "key": "lon", "value": "{{lon}}" }
+              ]
+            },
+            "description": "R7: full LLM understanding. Needs ANTHROPIC_API_KEY set; then degraded:false and llm_summary populated. Request lat/lon takes precedence for nearby routing."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Enrichment (R8)",
+      "item": [
+        {
+          "name": "R8 - llm_summary present on every article",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('llm_summary key present on each article', () => {",
+              "  b.articles.forEach(a => pm.expect(a).to.have.property('llm_summary'));",
+              "});",
+              "pm.test('heuristic mode: null summaries + degraded true (skip if API key set)', () => {",
+              "  if (b.degraded === true) b.articles.forEach(a => pm.expect(a.llm_summary).to.be.null);",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/category?category=sports&limit=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","category"],
+              "query": [
+                { "key": "category", "value": "sports" },
+                { "key": "limit", "value": "2" }
+              ]
+            },
+            "description": "R8: every article carries llm_summary. No key -> null + degraded:true; with key -> populated + degraded:false."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Validation & Errors",
+      "item": [
+        {
+          "name": "400 - Missing required param",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+              "const b = pm.response.json();",
+              "pm.test('uniform error envelope', () => pm.expect(b).to.include.all.keys('error','message','status','timestamp','path'));",
+              "pm.test('status field is 400', () => pm.expect(b.status).to.eql(400));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/category",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","category"]
+            },
+            "description": "Missing required 'category' -> 400 with uniform envelope."
+          }
+        },
+        {
+          "name": "400 - Threshold out of range",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/score?threshold=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","score"],
+              "query": [ { "key": "threshold", "value": "2" } ]
+            },
+            "description": "threshold must be within [0,1] -> 400."
+          }
+        },
+        {
+          "name": "400 - Latitude out of range",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/nearby?lat=200&lon=72",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","nearby"],
+              "query": [ { "key": "lat", "value": "200" }, { "key": "lon", "value": "72" } ]
+            },
+            "description": "lat must be within [-90,90] -> 400."
+          }
+        },
+        {
+          "name": "200 - Empty result (not 404)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('empty set -> total 0, articles []', () => { pm.expect(b.total).to.eql(0); pm.expect(b.articles).to.be.an('array').that.is.empty; });"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/category?category=no-such-category-xyz",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","category"],
+              "query": [ { "key": "category", "value": "no-such-category-xyz" } ]
+            },
+            "description": "No matches -> 200 with total:0 (never 404)."
+          }
+        },
+        {
+          "name": "200 - Limit clamped to 50",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('limit clamped to <= 50', () => pm.expect(b.total).to.be.at.most(50));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/news/score?threshold=0.0&limit=999",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","news","score"],
+              "query": [ { "key": "threshold", "value": "0.0" }, { "key": "limit", "value": "999" } ]
+            },
+            "description": "limit is clamped to [1,50]."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Actuator",
+      "item": [
+        {
+          "name": "Health (liveness/readiness)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator","health"]
+            },
+            "description": "Readiness gates on Postgres; Redis/LLM loss is degraded, not down."
+          }
+        },
+        {
+          "name": "Prometheus metrics",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('exposes news cache metrics', () => pm.expect(pm.response.text()).to.include('news_cache'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/prometheus",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator","prometheus"]
+            },
+            "description": "Micrometer/Prometheus metrics incl. cache hit/miss, redis errors, breaker state."
+          }
+        }
+      ]
+    }
+  ]
+}

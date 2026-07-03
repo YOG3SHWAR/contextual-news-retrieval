@@ -30,11 +30,15 @@ public class GlobalExceptionHandler {
             MethodArgumentTypeMismatchException.class,
             IllegalArgumentException.class})
     public ResponseEntity<ErrorResponse> handleBadRequest(Exception ex, HttpServletRequest req) {
+        // 4xx = client input, not a server fault → DEBUG (no stack trace, no alerting noise).
+        log.debug("400 Bad Request for {}: {}", req.getRequestURI(), messageFor(ex));
         return build(HttpStatus.BAD_REQUEST, "Bad Request", messageFor(ex), req, null);
     }
 
     @ExceptionHandler(RateLimitExceededException.class)
     public ResponseEntity<ErrorResponse> handleRateLimit(RateLimitExceededException ex, HttpServletRequest req) {
+        // Recoverable/expected shedding — worth surfacing, but no stack trace.
+        log.warn("429 Rate limited for {}", req.getRequestURI());
         HttpHeaders headers = new HttpHeaders();
         headers.add(HttpHeaders.RETRY_AFTER, "1");
         return build(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests", ex.getMessage(), req, headers);
@@ -42,6 +46,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
     public ResponseEntity<ErrorResponse> handleNotFound(Exception ex, HttpServletRequest req) {
+        log.debug("404 Not Found for {}", req.getRequestURI());
         return build(HttpStatus.NOT_FOUND, "Not Found", "No handler for " + req.getRequestURI(), req, null);
     }
 

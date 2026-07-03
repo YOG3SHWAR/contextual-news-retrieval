@@ -81,10 +81,28 @@ public class NewsProperties {
         private long timeoutMs = 5000;
         private int maxSummaryTokens = 120;
         private int summaryConcurrency = 4;
+        @NestedConfigurationProperty
+        private Prompts prompts = new Prompts();
 
         /** LLM is active only when explicitly enabled and an API key is present. */
         public boolean isActive() {
             return enabled && apiKey != null && !apiKey.isBlank();
+        }
+
+        /**
+         * Externalized prompt configuration. Prompts live in versioned resource
+         * files (bundled on the classpath) and can be overridden per-deployment by
+         * pointing the *-path to a {@code file:} or {@code classpath:} location —
+         * no recompile needed. The version tags are logged/metered so output can be
+         * correlated to a prompt revision.
+         */
+        @Getter
+        @Setter
+        public static class Prompts {
+            private String extractionPath = "classpath:prompts/extraction-system.txt";
+            private String summaryPath = "classpath:prompts/summary-system.txt";
+            private String extractionVersion = "extraction.v1";
+            private String summaryVersion = "summary.v1";
         }
     }
 
